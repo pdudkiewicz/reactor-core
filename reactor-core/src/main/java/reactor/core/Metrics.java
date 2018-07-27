@@ -16,6 +16,8 @@
 
 package reactor.core;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Supplier;
@@ -137,24 +139,22 @@ public class Metrics {
 
 	static final class MicrometerSchedulersFactory implements Factory {
 
+		private Map<String, Long> seenSchedulers = new HashMap<>();
+
 		@Override
 		public ScheduledExecutorService decorateExecutorService(String schedulerType,
 				Supplier<? extends ScheduledExecutorService> actual) {
 			ScheduledExecutorService service = actual.get();
-			String threadName;
-			try {
-				threadName = service.submit(() -> Thread.currentThread().getName()).get();
-			}
-			catch (Throwable e) {
-				threadName = "???" + schedulerType;
-			}
+
+			Long number = seenSchedulers.compute(schedulerType, (it, key) -> key == null ? 1 : key + 1);
+			String executorNumber = schedulerType + "-exec" + number;
 			MeterRegistry registry = Metrics.defaultRegistry;
 			if (registry == null) {
 				registry = globalRegistry;
 			}
 			ExecutorServiceMetrics.monitor(registry, service, schedulerType,
 					Tag.of("scheduler", actual.toString()),
-					Tag.of("threadName", threadName));
+					Tag.of("executorId", executorNumber));
 			return service;
 		}
 	}
