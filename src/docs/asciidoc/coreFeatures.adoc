@@ -283,14 +283,20 @@ WARNING: If not defined, `onError` throws an `UnsupportedOperationException`. Yo
 further detect and triage it with the `Exceptions.isErrorCallbackNotImplemented` method.
 
 Reactor also offers alternative means of dealing with errors in the middle of the chain,
-as error-handling operators.
-// TODO What does that look like? Can we get a sample?
+as error-handling operators. Here is an example:
+
+[source,java]
+----
+Flux.just(1, 2, 0)
+    .map(i -> "100 / " + i + " = " + (100 / i)) //this triggers an error with 0
+    .onErrorReturn("Divided by zero :("); // error handling example
+----
 
 IMPORTANT: Before you learn about error-handling operators, you must keep in mind that
 *any error in a reactive sequence is a terminal event*. Even if an error-handling
 operator is used, it does not allow the *original* sequence to continue. Rather, it
 converts the `onError` signal into the start of a *new* sequence (the fallback one). In
-other words, it replaces the terminated sequence _upstream_.
+other words, it replaces the terminated sequence _upstream_ of it.
 
 Now we can consider each means of error handling one-by-one. When relevant, we make a
 parallel with imperative programming's `try` patterns.
@@ -307,8 +313,7 @@ Most notably, these include the following:
 . Use the `finally` block to clean up resources or a Java 7 "try-with-resource" construct.
 
 All of these have equivalents in Reactor, in the form of error-handling operators.
-
-Before looking into these operators, we first establish a parallel between a reactive
+Before looking into these operators, let's first establish a parallel between a reactive
 chain and a try-catch block.
 
 When subscribing, the `onError` callback at the end of the chain is akin to a `catch`
@@ -348,8 +353,20 @@ Now that we have established a parallel, we'll look at the different error handl
 and their equivalent operators.
 
 ==== Static Fallback Value
-The equivalent of *(1)* (catch and return a static default value) is
+The equivalent of "**_Catch and return a static default value_**" is
 `onErrorReturn`:
+[source,java]
+----
+try {
+  return doSomethingDangerous(10);
+}
+catch (Throwable error) {
+  return "RECOVERED";
+}
+----
+
+becomes:
+
 [source,java]
 ----
 Flux.just(10)
@@ -357,23 +374,46 @@ Flux.just(10)
     .onErrorReturn("RECOVERED");
 ----
 
-You also have the option of filtering (choosing) when to recover with a default value
-versus letting the error propagate, depending on the exception that occurred:
+You also have the option of applying a `Predicate` on the exception to decided
+whether or not to recover:
 [source,java]
 ----
 Flux.just(10)
     .map(this::doSomethingDangerous)
-    .onErrorReturn(e -> e.getMessage().equals("boom10"), "recovered10");
+    .onErrorReturn(e -> e.getMessage().equals("boom10"), "recovered10"); //<1>
 ----
+<1> only recover if the message of the exception is `"boom10"`
 
 ==== Fallback Method
 If you want more than a single default value and you have an alternative safer way of
-processing your data, you can use `onErrorResume`. This would be the equivalent of *(2)*
-(catch and execute an alternative path with a fallback method).
+processing your data, you can use `onErrorResume`. This would be the equivalent of
+"**_Catch and execute an alternative path with a fallback method_**".
 
 For example, if your nominal process is fetching data from an external and unreliable
 service, but you also keep a local cache of the same data that _can_ be a bit more out of
 date but is more reliable, you could do the following:
+
+[source,java]
+----
+String v1;
+try {
+  v1 = callExternalService("key1");
+}
+catch (Throwable error) {
+  v1 = getFromCache("key1");
+}
+
+String v2;
+try {
+  v2 = callExternalService("key2");
+}
+catch (Throwable error) {
+  v2 = getFromCache("key2");
+}
+----
+
+becomes:
+
 [source,java]
 ----
 Flux.just("key1", "key2")
@@ -411,38 +451,67 @@ Flux.just("timeout1", "unknown", "key2")
 ==== Dynamic Fallback Value
 Even if you do not have an alternative safer way of processing your data, you might want
 to compute a fallback value out of the exception you received. This would be the
-equivalent of *(3)* (catch and dynamically compute a fallback value).
+equivalent of "**_Catch and dynamically compute a fallback value_**".
 
-For instance, if your return type has a variant dedicated to holding an exception (think
+For instance, if your return type `MyWrapper` has a variant dedicated to holding an exception (think
 `Future.complete(T success)` vs `Future.completeExceptionally(Throwable error)`), you
 could instantiate the error-holding variant and pass the exception.
 
-This can be done in the same way as the fallback method solution, using `onErrorResume`.
-You need a tiny bit of boilerplate:
+An imperative example would look like the following:
+
+[source,java]
+----
+try {
+  Value v = erroringMethod();
+  return MyWrapper.fromValue(v);
+}
+catch (Throwable error) {
+  return MyWrapper.fromError(error);
+}
+----
+
+This can be done reactively in the same way as the fallback method solution,
+using `onErrorResume`, with a tiny bit of boilerplate:
 
 [source,java]
 ----
 erroringFlux.onErrorResume(error -> Mono.just( // <1>
-        myWrapper.fromError(error) // <2>
+        MyWrapper.fromError(error) // <2>
 ));
 ----
-<1> The boilerplate creates a `Mono` from `Mono.just` with `onErrorResume`.
-<2> You then wrap the exception into the ad hoc class or otherwise compute the value out
-of the exception.
+<1> Since you expect a `MyWrapper` representation of the error, you'll need to get a
+`Mono<MyWrapper>` for `onErrorResume`. We use `Mono.just()` for that.
+<2> We need to compute the value out of the exception. Here we achieved That
+by wrapping the exception using a relevant `MyWrapper` factory method.
 
 ==== Catch and Rethrow
-In the "fallback method" example, the last line inside the `flatMap` gives us a hint as
-to how item *(4)* (Catch, wrap to a `BusinessException`, and re-throw) could be achieved:
+"**_Catch, wrap to a `BusinessException`, and re-throw_**" in the imperative world
+looks like the following:
+
+[source,java]
+----
+try {
+  return callExternalService(k);
+}
+catch (Throwable error) {
+  throw new BusinessException("oops, SLA exceeded", error);
+}
+----
+
+In the "fallback method" example, the last line inside the `flatMap` gives us a hint
+at achieving the same reactively:
 
 [source,java]
 ----
 Flux.just("timeout1")
     .flatMap(k -> callExternalService(k))
     .onErrorResume(original -> Flux.error(
-            new BusinessException("oops, SLA exceeded", original));
+            new BusinessException("oops, SLA exceeded", original))
+    );
 ----
 
 However, there is a more straightforward way of achieving the same with `onErrorMap`:
+
 [source,java]
 ----
 Flux.just("timeout1")
@@ -453,14 +522,29 @@ Flux.just("timeout1")
 ==== Log or React on the Side
 For cases where you want the error to continue propagating but you still want to react to
 it without modifying the sequence (logging it, for instance) there is the `doOnError`
-operator. This is the equivalent of *(5)* (Catch, log an error-specific message, and
-re-throw). This operator, as well as all operators prefixed with `doOn` , are sometimes
+operator. This is the equivalent of "**_Catch, log an error-specific message, and re-throw_**"
+pattern, shown below:
+
+[source,java]
+----
+try {
+  return callExternalService(k);
+}
+catch {
+  //make a record of the error
+  log("uh oh, falling back, service failed for key " + k);
+  //recover from the error
+  return getFromCache(k);
+}
+----
+
+The `doOnError` operator, as well as all operators prefixed with `doOn` , are sometimes
 referred to as a "side-effect". They let you peek inside the sequence's events without
 modifying them.
 
-The following example ensures that, when we fallback to the cache, we at least log that
-the external service had a failure. We can also imagine we have statistic counters to
-increment as an error side-effect.
+Like the imperative example above, the following example ensures that when we
+fallback to the cache, we at least log that the external service had a failure.
+We can also imagine we have statistic counters to increment as a second error side-effect.
 
 [source,java]
 ----
@@ -476,16 +560,69 @@ Flux.just("unknown")
     );
 ----
 <1> The external service call that can fail...
-<2> ...is decorated with a logging side-effect...
+<2> ...is decorated with a logging and stats side-effect...
 <3> ...and then protected with the cache fallback.
 
 ==== Using Resources and the Finally Block
 The last parallel to draw with imperative programming is the cleaning up that can be done
-either via a Java 7 "try-with-resources" construct or the use of the `finally` block.
-This is the equivalent of *(6)* (use the `finally` block to clean up resources or a Java
-7 "try-with-resource" construct). Both have their Reactor equivalents, `using` and
-`doFinally`:
+either via a "**_Use of the `finally` block to clean up resources_**" or a
+"**_Java 7 try-with-resource construct_**", both shown below:
+
 [source,java]
+.Imperative use of finally
+----
+Stats stats = new Stats();
+stats.startTimer();
+try {
+  doSomethingDangerous();
+}
+finally {
+  stats.stopTimerAndRecordTiming();
+}
+----
+
+[source]
+.Imperative use of try-with-resource
+----
+try (SomeAutoCloseable disposableInstance = new SomeAutoCloseable()) {
+  return disposableInstance.toString();
+}
+----
+
+Both have their Reactor equivalents, `doFinally` and `using`.
+
+`doFinally` is about side-effects that you want to be executed whenever the
+sequence terminates (with `onComplete` or `onError`) or is cancelled.
+It gives you a hint as to what kind of termination triggered the side-effect:
+
+[source,java]
+.Reactive finally: `doFinally()`
+----
+Stats stats = new Stats();
+LongAdder statsCancel = new LongAdder();
+
+Flux<String> flux =
+Flux.just("foo", "bar")
+    .doOnSubscribe(s -> stats.startTimer())
+    .doFinally(type -> { // <1>
+        stats.stopTimerAndRecordTiming();// <2>
+        if (type == SignalType.CANCEL) // <3>
+          statsCancel.increment();
+    })
+    .take(1); // <4>
+----
+<1> `doFinally` consumes a `SignalType` for the type of termination.
+<2> Similarly to `finally` blocks, we always record the timing.
+<3> Here we also increment statistics in case of cancellation only.
+<4> `take(1)` will cancel after 1 item is emitted.
+
+On the other hand, `using` handles the case where a `Flux` is derived from a
+resource, and that resource must be acted upon whenever processing is done.
+Let's replace the `AutoCloseable` interface of "try-with-resource" with a
+`Disposable`:
+
+[source,java]
+.The Disposable resource
 ----
 AtomicBoolean isDisposed = new AtomicBoolean();
 Disposable disposableInstance = new Disposable() {
@@ -499,7 +636,14 @@ Disposable disposableInstance = new Disposable() {
         return "DISPOSABLE";
     }
 };
+----
 
+Now we can do the reactive equivalent of "try-with-resource" on it, which looks
+like the following:
+
+[source,java]
+.Reactive try-with-resource: `using()`
+----
 Flux<String> flux =
 Flux.using(
         () -> disposableInstance, // <1>
@@ -514,26 +658,6 @@ clean up resources.
 <4> After subscription and execution of the sequence, the `isDisposed` atomic boolean
 would become `true`.
 
-On the other hand, `doFinally` is about side-effects that you want to be executed
-whenever the sequence terminates, whether with `onComplete`, `onError`, or cancellation.
-It gives you a hint as to what kind of termination triggered the side-effect:
-
-[source,java]
-----
-LongAdder statsCancel = new LongAdder(); // <1>
-
-Flux<String> flux =
-Flux.just("foo", "bar")
-    .doFinally(type -> {
-        if (type == SignalType.CANCEL) // <2>
-          statsCancel.increment(); // <3>
-    })
-    .take(1); // <4>
-----
-<1> We assume we want to gather statistics. Here we use a `LongAdder`.
-<2> `doFinally` consumes a `SignalType` for the type of termination.
-<3> Here we increment statistics in case of cancellation only.
-<4> `take(1)` will cancel after 1 item is emitted.
 
 ==== Demonstrating the Terminal Aspect of `onError`
 In order to demonstrate that all these operators cause the upstream original sequence to
@@ -574,10 +698,10 @@ There is another operator of interest with regards to error handling, and you mi
 tempted to use it in the case above. `retry`, as its name indicates, lets you retry an
 error-producing sequence.
 
-The trouble is that it works by *re-subscribing* to the upstream `Flux`. This is really a
-different sequence, and the original one is still terminated. To verify that, we can
-re-use the previous example and append a `retry(1)` to retry once instead of using
-`onErrorReturn`:
+The thing to keep in mind is that it works by *re-subscribing* to the upstream `Flux`.
+This is really a different sequence, and the original one is still terminated.
+To verify that, we can re-use the previous example and append a `retry(1)` to
+retry once instead of using `onErrorReturn`:
 
 [source,java]
 ----
@@ -624,13 +748,13 @@ parameter of `retryWhen`. As the user, you define that function and make it retu
 `Publisher<?>`. Retry cycles will go like this:
 
 . Each time an error happens (potential for a retry), the error is emitted into the
-companion `Flux`, which has been decorated by your function.
-. If the companion `Flux` emits something, a retry happens.
-. If the companion `Flux` completes, the retry cycle stops and the original sequence
-*completes* too.
-. If the companion `Flux` produces an error, the retry cycle stops and the original
-sequence also stops *or* completes, and the error causes the original sequence to fail
-and terminate.
+companion `Flux`, which has been decorated by your function. Having a `Flux` here
+gives a bird eye's view of all the attempts so far.
+. If the companion `Flux` emits a value, a retry happens.
+. If the companion `Flux` completes, the error is swallowed, the retry cycle stops
+and the resulting sequence *completes* too.
+. If the companion `Flux` produces an error `e`, the retry cycle stops and the
+resulting sequence **errors** with `e`.
 
 The distinction between the previous two cases is important. Simply completing the
 companion would effectively swallow an error. Consider the following way of emulating
@@ -644,7 +768,7 @@ Flux<String> flux = Flux
     .retryWhen(companion -> companion.take(3)); // <3>
 ----
 <1> This continuously produces errors, calling for retry attempts.
-<2> `doOnError` *before* the retry will let us see all failures.
+<2> `doOnError` *before* the retry will let us log and see all failures.
 <3> Here, we consider the first 3 errors as retry-able (`take(3)`) and then give up.
 
 In effect, this results in an *empty* `Flux`, but it completes *successfully*. Since
@@ -732,7 +856,6 @@ the exception, and your map function cannot re-throw it. So you can propagate it
 map's `onError` method as a `RuntimeException`:
 
 [source,java]
-
 ----
 Flux<String> converted = Flux
     .range(1, 10)
