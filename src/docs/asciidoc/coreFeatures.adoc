@@ -241,7 +241,30 @@ the part of the chain after them.
 
 NOTE: Only the earliest `subscribeOn` call in the chain is actually taken into account.
 
-//FIXME continue 3.2 doc pass from here
+=== Cancelling a `subscribe()` with its `Disposable`
+
+All these lambda-based variants of `subscribe()` have a `Disposable` return type.
+In this case, the `Disposable` interface represents the fact that the subscription
+can be _cancelled_, by calling its `dispose()` method.
+
+For a `Flux` or `Mono`, cancellation is a signal that the source should stop
+producing elements. However, it is NOT guaranteed to be immediate: some sources
+might produce elements so fast that they could complete even before receiving the
+cancel instruction.
+
+Some utilities around `Disposable` are available in the `Disposables` class.
+Among these, `Disposables.swap()` creates a `Disposable` wrapper that allows
+you to atomically cancel and replace a concrete `Disposable`. This can be useful,
+for instance, in a UI scenario where you want to cancel a request and replace it
+with a new one whenever the user clicks on a button. Disposing the wrapper itself
+closes it, disposing the current concrete value and all future attempted replacements.
+
+Another interesting utility is `Disposables.composite(...)`. This composite
+allows to collect several `Disposable`, for instance multiple in-flight request
+associated with a service call, and dispose all of them at once later on.
+Once the composite's `dispose()` method has been called, any attempt at adding
+another `Disposable` immediately disposes it.
+
 
 [[error.handling]]
 == Handling Errors
